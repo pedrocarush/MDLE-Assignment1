@@ -1,4 +1,6 @@
-data
+data/*
 frequent_diseases_k*
 *.pdf
 *.txt
+
+!data/.empty
