@@ -1,5 +1,6 @@
 data/*
 frequent_diseases_k*
+association_rules
 *.pdf
 *.csv
 
