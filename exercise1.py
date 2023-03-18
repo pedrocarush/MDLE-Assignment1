@@ -1,9 +1,9 @@
 import os.path
 from pyspark import Broadcast
-from pyspark.sql import SparkSession, DataFrame, Column
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import *
 from pyspark.sql.types import StringType, ArrayType
-from itertools import combinations, chain
+from itertools import combinations
 from typing import Iterable, Any, List, Tuple, Dict, Set
 
 from argparse import ArgumentParser
