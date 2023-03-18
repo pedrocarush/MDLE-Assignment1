@@ -48,7 +48,7 @@ def first_pass(
         df: DataFrame,
         support_threshold: int,
         table_frequent_base: str
-        ) -> Tuple[DataFrame, Broadcast[Set[str]]]:
+        ) -> Tuple[DataFrame, Broadcast]:
     
     fname = table_frequent_base + '_k1'
 
@@ -298,14 +298,16 @@ def main(
 
 
 if __name__ == '__main__':
-    
+
+    default_str = ' (default: %(default)s)'
+
     parser = ArgumentParser()
-    parser.add_argument("file", type=str, help="Path to the input dataset")
-    parser.add_argument("-s", "--support", type=int, default=1000, help="Support threshold")
-    parser.add_argument("-l", "--standardised-lift", type=float, default=0.2, help="Standardised lift threshold")
-    parser.add_argument("-t", "--table-frequent-base", type=str, default="frequent_diseases", help="Base name for the frequent itemsets parquets saved to disk")
-    parser.add_argument("-m", "--most-frequent-base", type=str, default="most_frequent", help="Base name for the results on the most frequent itemsets saved to disk (WARNING: overwrites files named 'most_frequent_k{2,3}.csv')")
-    parser.add_argument("-a", "--association-rules-name", type=str, default="association_rules", help="Name for the association rules saved to disk (WARNING: overwrites files with the same name)")
+    parser.add_argument("file", type=str, help="path to the input dataset")
+    parser.add_argument("-s", "--support", type=int, default=1000, help="support threshold" + default_str)
+    parser.add_argument("-l", "--standardised-lift", type=float, default=0.2, help="standardised lift threshold" + default_str)
+    parser.add_argument("-t", "--table-frequent-base", type=str, default="frequent_diseases", help="base name for the frequent itemsets parquets saved/loaded to/from disk" + default_str)
+    parser.add_argument("-m", "--most-frequent-base", type=str, default="most_frequent", help="base name for the results on the most frequent itemsets saved to disk (WARNING: overwrites files named 'most_frequent_k{2,3}.csv')" + default_str)
+    parser.add_argument("-a", "--association-rules-name", type=str, default="association_rules", help="name for the association rules saved to disk (WARNING: overwrites files with the same name)" + default_str)
     
     args = parser.parse_args()
 
