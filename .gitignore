@@ -1,6 +1,8 @@
 data/*
 frequent_diseases_k*
 association_rules
+minhash*
+candidate_pairs*
 *.pdf
 *.csv
 

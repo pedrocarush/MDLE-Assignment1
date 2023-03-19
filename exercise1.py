@@ -295,6 +295,8 @@ def main(
 
     generate_association_rules(n_patients, frequent_diseases_k1, frequent_diseases_k2, frequent_diseases_k3, standardised_lift_threshold, association_rules_name)
 
+    spark.stop()
+
 
 
 if __name__ == '__main__':
