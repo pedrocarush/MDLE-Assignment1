@@ -170,7 +170,7 @@ def write_most_frequent_diseases(
             ), sep='\n', file=f)
         
     with open(most_frequent_base + '_k3.csv', 'w') as f:
-        print('pair\tcount', file=f)
+        print('triple\tcount', file=f)
         print(*(
                 f'{r.CODE_TRIPLE}\t{r.COUNT}' for r in
                 frequent_diseases_k3
