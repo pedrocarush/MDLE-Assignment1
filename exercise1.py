@@ -127,9 +127,10 @@ def third_pass(
 
     fname = table_frequent_base + '_k3'
 
+    # TODO: is array_sort after the combination generation actually? watch out for the way spark partitions and stuff...?
     if not os.path.exists(fname):
         frequent_diseases_k3 = df \
-            .filter(col('CODE').isin(frequent_diseases_k1_set)) \
+            .filter(col('CODE').isin(frequent_diseases_k1_set.value)) \
             .groupBy('PATIENT') \
             .agg(collect_list('CODE')) \
             .withColumn('collect_list(CODE)', array_sort('collect_list(CODE)')) \
@@ -293,7 +294,9 @@ def main(
 
     n_patients = df.select('PATIENT').distinct().count()
 
-    generate_association_rules(n_patients, frequent_diseases_k1, frequent_diseases_k2, frequent_diseases_k3, standardised_lift_threshold, association_rules_name)
+    rules_metrics = generate_association_rules(n_patients, frequent_diseases_k1, frequent_diseases_k2, frequent_diseases_k3, standardised_lift_threshold)
+
+    write_association_rules(code_description_map, rules_metrics, association_rules_name)
 
     spark.stop()
 
