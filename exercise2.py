@@ -1,5 +1,6 @@
 import os.path
 import random
+import math
 import pyspark.sql.functions as F
 from pyspark.sql import SparkSession, Row, DataFrame
 from pyspark.sql.types import StringType, ArrayType, IntegerType, StructType, StructField
@@ -10,7 +11,7 @@ from typing import Iterable, Any, List, Callable
 from argparse import ArgumentParser
 
 """
-Python-file version of the Jupyter notebook, for submission via spark-submit.
+Python-file version of Exercise 2's Jupyter notebook, for submission via spark-submit.
 The documentation is present in the notebook.
 """
 
@@ -77,40 +78,49 @@ def generate_candidate_pairs(spark: SparkSession, df_minhash: DataFrame, b: int,
     
     df_bands = df_minhash \
         .withColumn('min_hash_slices', generate_even_slices('min_hash')) \
-        .select('tweet_id', *(F.hash(F.col('min_hash_slices')[band]).alias(f'band_{band}') for band in range(b)))
+        .withColumn('bands', F.array(*(
+            F.struct(
+                F.hash(F.col('min_hash_slices')[band]).alias('band_hash'),
+                F.lit(band).alias('band')
+            )
+            for band in range(b))
+        )) \
+        .withColumn('bands', F.explode('bands')) \
+        .select('tweet_id', F.col('bands').band.alias('band'), F.col('bands').band_hash.alias('band_hash'))
 
     @F.udf(returnType=ArrayType(ArrayType(StringType(), False), False))
     def combine_pairs(elems: Iterable[Any]):
         return list(combinations(elems, 2))
 
-    df_bands_lst = [
-        df_bands
-            .select('tweet_id', f'band_{band}')
-            .groupby(f'band_{band}')
-            .agg(F.collect_list('tweet_id'))
-            .withColumnRenamed('collect_list(tweet_id)', 'candidates')
-            .withColumn('candidates', F.array_sort('candidates'))
-            .select(F.explode(combine_pairs('candidates')).alias('candidate_pair'))
-        for band in range(b)
-    ]
+    df_candidate_pairs = return df_bands \
+        .groupby('band', 'band_hash') \
+        .agg(F.collect_list('tweet_id')) \
+        .withColumnRenamed('collect_list(tweet_id)', 'candidates') \
+        .withColumn('candidates', F.array_sort('candidates')) \
+        .filter(F.size('candidates') > 1) \
+        .repartition(num_partitions) \
+        .select('candidates') \
+        .distinct() \
+        .select(F.explode(combine_pairs('candidates')).alias('candidate_pair')) \
+        .select(F.col('candidate_pair')[0].alias('candidate_pair_first'), F.col('candidate_pair')[1].alias('candidate_pair_second')) \
+        .distinct() 
 
-    df_candidate_pairs = spark.createDataFrame([], schema=StructType([StructField(name='candidate_pair', dataType=ArrayType(StringType(), False), nullable=False)]))
-
-    for d in df_bands_lst:
-        df_candidate_pairs = df_candidate_pairs.union(d)
-
-    return df_candidate_pairs.distinct()
+    return df_candidate_pairs
 
 
 def filter_false_positives(df_candidate_pairs: DataFrame, df_minhash: DataFrame, similarity_threshold: float) -> DataFrame:
+    @F.udf(returnType=IntegerType())
+    def min_hash_similar(min_hash_0: List[int], min_hash_1: List[int]):
+        return sum((elem0 == elem1) for elem0, elem1 in zip(min_hash_0, min_hash_1))
+    
     return df_candidate_pairs \
-        .join(df_minhash, df_minhash['tweet_id'] == F.col('candidate_pair')[0]) \
+        .join(df_minhash, df_minhash['tweet_id'] == F.col('candidate_pair_first')) \
         .withColumnRenamed('min_hash', 'min_hash_first') \
         .drop('tweet_id') \
-        .join(df_minhash, df_minhash['tweet_id'] == F.col('candidate_pair')[1]) \
+        .join(df_minhash, df_minhash['tweet_id'] == F.col('candidate_pair_second')) \
         .withColumnRenamed('min_hash', 'min_hash_second') \
         .drop('tweet_id') \
-        .withColumn('similarity', F.size(F.array_intersect('min_hash_first', 'min_hash_second')) / F.size(F.array_union('min_hash_first', 'min_hash_second'))) \
+        .withColumn('similarity', min_hash_similar('min_hash_first', 'min_hash_second') / num_functions) \
         .filter(F.col('similarity') >= similarity_threshold)
 
 
@@ -131,10 +141,6 @@ def get_similar_articles(df_candidate_pairs: DataFrame, tweet_id: str) -> List[s
     return [row.similar_article for row in rows]
 
 
-def fpfn_analysis():
-    pass
-
-
 
 def main(
         dataset: str,
@@ -151,11 +157,10 @@ def main(
     
     random.seed(seed)
 
+    similarity_threshold = (1 - b)**(1 - r)
+
     spark = initialize_spark()
     
-    if similar_to is not None:
-        filter_false_positives(df_candidate_pairs, )
-
     df = prepare_data(spark, dataset, partitions)
 
     df_shingles = generate_shingles(df, shingle_size)
@@ -164,9 +169,49 @@ def main(
     df_minhash = save_and_load_df(spark, df_minhash, f'minhash_{rows}_{bands}')
 
     df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows)
+    df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_minhash, similarity_threshold)
+    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'candidate_pairs_{rows}_{bands}')
+
+    if similar_to is not None:
+        similar_articles = get_similar_articles(df_candidate_pairs_fpless, similar_to)
+        print(f'Articles similar to \'{similar_to}\':')
+        print(*similar_articles, sep='\n')
 
     if fpfn_analysis:
-        fpfn_analyze(fpfn_analysis_samples, fpfn_analysis_fraction)
+        false_positive_percentages = []
+        false_negative_percentages = []
+        
+        for _ in range(fpfn_analysis_samples):
+            df_minhash_sample = df_minhash.sample(fraction=fpfn_analysis_fraction, seed=seed, withReplacement=False)
+            
+            df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash, bands, rows)
+
+            df_candidate_pairs_fpless_sample = filter_false_positives(df_candidate_pairs_sample, df_minhash_sample, similarity_threshold)
+
+            candidate_pairs_n = df_candidate_pairs_sample.count()
+            candidate_pairs_fpless_n = df_candidate_pairs_fpless_sample.count()
+            false_positive_percentage = (candidate_pairs_n - candidate_pairs_fpless_n) / candidate_pairs_n
+
+            false_negatives = df_minhash_sample \
+                .crossJoin(df_minhash_sample.select(F.col('tweet_id').alias('tweet_id_other'), F.col('min_hash').alias('min_hash_other'))) \
+                .filter(F.col('tweet_id') < F.col('tweet_id_other')) \
+                .select(F.array('tweet_id', 'tweet_id_other').alias('pair'),'min_hash', 'min_hash_other') \
+                .join(df_candidate_pairs_sample, F.array(df_candidate_pairs_sample['candidate_pair_first'], df_candidate_pairs_sample['candidate_pair_second']) == F.col('pair'), 'left') \
+                .filter(F.col('candidate_pair_first').isNull()) \
+                .drop('candidate_pair_first', 'candidate_pair_second') \
+                .withColumn('similarity', min_hash_similar('min_hash', 'min_hash_other') / num_functions) \
+                .filter(F.col('similarity') >= similarity_threshold) \
+                .count()
+
+            tweets_n = df_minhash_sample.count()
+            false_negative_percentage = false_negatives / (math.comb(tweets_n, 2) - candidate_pairs_n)
+
+            false_positive_percentages.append(false_positive_percentage)
+            false_negative_percentages.append(false_negative_percentage)
+        
+        avg = lambda l: sum(l)/len(l)
+        print(f'False positive percentage (average over {fpfn_analysis_samples} of fraction {fpfn_analysis_fraction}): {avg(false_positive_percentages):%}')
+        print(f'False positive percentage (average over {fpfn_analysis_samples} of fraction {fpfn_analysis_fraction}): {avg(false_negative_percentages):%}')
 
     spark.stop()
 

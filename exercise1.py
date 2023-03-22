@@ -9,7 +9,7 @@ from typing import Iterable, Any, List, Tuple, Dict, Set
 from argparse import ArgumentParser
 
 """
-Python-file version of the Jupyter notebook, for submission via spark-submit.
+Python-file version of Exercise 1's Jupyter notebook, for submission via spark-submit.
 The documentation is present in the notebook.
 """
 
