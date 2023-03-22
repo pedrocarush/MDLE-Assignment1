@@ -131,6 +131,10 @@ def get_similar_articles(df_candidate_pairs: DataFrame, tweet_id: str) -> List[s
     return [row.similar_article for row in rows]
 
 
+def fpfn_analysis():
+    pass
+
+
 
 def main(
         dataset: str,
@@ -163,8 +167,6 @@ def main(
 
     if fpfn_analysis:
         fpfn_analyze(fpfn_analysis_samples, fpfn_analysis_fraction)
-
-    
 
     spark.stop()
 
