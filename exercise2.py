@@ -133,9 +133,10 @@ def save_and_load_df(spark: SparkSession, df: DataFrame, fname: str) -> DataFram
 
 def get_similar_articles(df_candidate_pairs: DataFrame, tweet_id: str) -> List[str]:
     rows = df_candidate_pairs \
-        .filter(F.array_contains('candidate_pair', tweet_id)) \
-        .select(F.array_remove('candidate_pair', tweet_id).alias('sole_candidate')) \
-        .select(F.col('sole_candidate')[0].alias('similar_article')) \
+        .withColumn('candidate_pair_first', F.when(F.col('candidate_pair_first') != tweet_id, F.col('candidate_pair_first'))) \
+        .withColumn('candidate_pair_second', F.when(F.col('candidate_pair_second') != tweet_id, F.col('candidate_pair_second'))) \
+        .filter(F.col('candidate_pair_first').isNull() | F.col('candidate_pair_second').isNull()) \
+        .select(F.coalesce('candidate_pair_first', 'candidate_pair_second').alias('similar_article')) \
         .collect()
 
     return [row.similar_article for row in rows]
@@ -169,7 +170,7 @@ def main(
     df_shingles = generate_shingles(df, shingle_size, partitions)
 
     df_minhash = calculate_min_hash(spark, df_shingles, rows, bands)
-    print('Saving the minhashes... ', end='')
+    print('Saving the minhashes...', end=' ')
     df_minhash = save_and_load_df(spark, df_minhash, f'{minhash_base}_{rows}_{bands}')
     print('and loaded')
 
@@ -180,20 +181,26 @@ def main(
     print('and loaded')
 
     if similar_to is not None:
+        print('Getting articles...', end=' ')
         similar_articles = get_similar_articles(df_candidate_pairs_fpless, similar_to)
-        print(f'Articles similar to \'{similar_to}\':')
+        print(f'similar to \'{similar_to}\':')
         print(*similar_articles, sep='\n')
 
     if fpfn_analysis:
+        print('Analyzing false positives/negatives')
         false_positive_percentages = []
         false_negative_percentages = []
         
-        for _ in range(fpfn_analysis_samples):
+        for sample_i in range(fpfn_analysis_samples):
+            print(f'Calculating sample number {sample_i + 1}...', end=' ')
+            
             df_minhash_sample = df_minhash.sample(fraction=fpfn_analysis_fraction, seed=seed, withReplacement=False)
             
             df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
 
             df_candidate_pairs_fpless_sample = filter_false_positives(df_candidate_pairs_sample, df_minhash_sample, similarity_threshold, bands, rows)
+
+            print('minhashes and candidate pairs calculated...', end=' ')
 
             candidate_pairs_n = df_candidate_pairs_sample.count()
             candidate_pairs_fpless_n = df_candidate_pairs_fpless_sample.count()
@@ -212,6 +219,8 @@ def main(
 
             tweets_n = df_minhash_sample.count()
             false_negative_percentage = false_negatives / (math.comb(tweets_n, 2) - candidate_pairs_n)
+
+            print('false positive and negative percentage calculated')
 
             false_positive_percentages.append(false_positive_percentage)
             false_negative_percentages.append(false_negative_percentage)
