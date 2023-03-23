@@ -152,7 +152,9 @@ def main(
         similar_to: str=None,
         fpfn_analysis: bool=False,
         fpfn_analysis_samples: int=1,
-        fpfn_analysis_fraction: float=0.01
+        fpfn_analysis_fraction: float=0.01,
+        minhash_base: str='minhash',
+        candidate_pairs_base: str='candidate_pairs',
 ):
     
     random.seed(seed)
@@ -166,11 +168,11 @@ def main(
     df_shingles = generate_shingles(df, shingle_size)
 
     df_minhash = calculate_min_hash(spark, df_shingles, rows, bands)
-    df_minhash = save_and_load_df(spark, df_minhash, f'minhash_{rows}_{bands}')
+    df_minhash = save_and_load_df(spark, df_minhash, f'{minhash_base}_{rows}_{bands}')
 
     df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
     df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_minhash, similarity_threshold, bands, rows)
-    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'candidate_pairs_{rows}_{bands}')
+    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_{rows}_{bands}')
 
     if similar_to is not None:
         similar_articles = get_similar_articles(df_candidate_pairs_fpless, similar_to)
@@ -227,11 +229,13 @@ if __name__ == '__main__':
     parser.add_argument("-b", "--bands", type=int, default=13, help="number of LSH bands" + default_str)
     parser.add_argument("-r", "--rows", type=int, default=11, help="number of LSH rows" + default_str)
     parser.add_argument("-s", "--seed", type=int, default=1, help="seed for the random number generator" + default_str)
-    parser.add_argument("-p", "--partitions", type=int, default=8, help="number of partitions (mainly for filtering operations)")
+    parser.add_argument("-p", "--partitions", type=int, default=8, help="number of partitions (mainly for filtering operations)" + default_str)
     parser.add_argument("--similar-to", type=str, default=None, help="if set, return the most similar tweets to the provided tweet" + default_str)
     parser.add_argument("--fpfn-analysis", action="store_true", help="perform analysis on FP (false positives) and FN (false negatives) on samples of the dataset")
     parser.add_argument("--fpfn-analysis-samples", type=int, default=1, help="number of samples for the FP/FN analysis" + default_str)
-    parser.add_argument("--fpfn-analysis-fraction", type=float, default=0.01, help="fraction of the dataset to use for each sample for the FP/FN analysis" + default_str)
+    parser.add_argument("--fpfn-analysis-fraction", type=float, default=0.1, help="fraction of the dataset to use for each sample for the FP/FN analysis" + default_str)
+    parser.add_argument("--minhash-base", type=str, default="minhash", help="base name for the minhash calculations" + default_str)
+    parser.add_argument("--candidate-pairs-base", type=str, default="candidate_pairs", help="base name for the candidate pairs (without false positives)" + default_str)
     
     args = parser.parse_args()
 
@@ -245,5 +249,7 @@ if __name__ == '__main__':
         similar_to=args.similar_to,
         fpfn_analysis=args.fpfn_analysis,
         fpfn_analysis_samples=args.fpfn_analysis_samples,
-        fpfn_analysis_fraction=args.fpfn_analysis_fraction
+        fpfn_analysis_fraction=args.fpfn_analysis_fraction,
+        minhash_base=args.minhash_base,
+        candidate_pairs_base=args.candidate_pairs_base,
     )
