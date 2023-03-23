@@ -74,7 +74,7 @@ def generate_candidate_pairs(spark: SparkSession, df_minhash: DataFrame, b: int,
     
     @F.udf(returnType=ArrayType(ArrayType(IntegerType(), False), False))
     def generate_even_slices(minhashes: List[int]):
-        return [minhashes[i:i+b] for i in range(0, b * r, b)]
+        return [minhashes[i:i+r] for i in range(0, b * r, r)]
     
     df_bands = df_minhash \
         .withColumn('min_hash_slices', generate_even_slices('min_hash')) \
