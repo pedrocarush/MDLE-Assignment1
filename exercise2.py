@@ -150,6 +150,7 @@ def main(
         rows: int,
         seed: int,
         partitions: int,
+        similarity_threshold: float,
         similar_to: str=None,
         fpfn_analysis: bool=False,
         fpfn_analysis_samples: int=1,
@@ -159,8 +160,6 @@ def main(
 ):
     
     random.seed(seed)
-
-    similarity_threshold = (1 - bands)**(1 - rows)
 
     spark = initialize_spark()
     spark.sparkContext.setLogLevel('ERROR')
@@ -194,9 +193,9 @@ def main(
         for sample_i in range(fpfn_analysis_samples):
             print(f'Calculating sample number {sample_i + 1}...', end=' ')
             
-            df_minhash_sample = df_minhash.sample(fraction=fpfn_analysis_fraction, seed=seed, withReplacement=False)
+            df_minhash_sample = df_minhash.sample(fraction=fpfn_analysis_fraction, seed=seed + sample_i, withReplacement=False)
             
-            df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
+            df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash_sample, bands, rows, partitions)
 
             df_candidate_pairs_fpless_sample = filter_false_positives(df_candidate_pairs_sample, df_minhash_sample, similarity_threshold, bands, rows)
 
@@ -204,6 +203,7 @@ def main(
 
             candidate_pairs_n = df_candidate_pairs_sample.count()
             candidate_pairs_fpless_n = df_candidate_pairs_fpless_sample.count()
+
             false_positive_percentage = (candidate_pairs_n - candidate_pairs_fpless_n) / candidate_pairs_n
 
             false_negatives = df_minhash_sample \
@@ -227,7 +227,7 @@ def main(
         
         avg = lambda l: sum(l)/len(l)
         print(f'False positive percentage (average over {fpfn_analysis_samples} of fraction {fpfn_analysis_fraction}): {avg(false_positive_percentages):%}')
-        print(f'False positive percentage (average over {fpfn_analysis_samples} of fraction {fpfn_analysis_fraction}): {avg(false_negative_percentages):%}')
+        print(f'False negative percentage (average over {fpfn_analysis_samples} of fraction {fpfn_analysis_fraction}): {avg(false_negative_percentages):%}')
 
     spark.stop()
 
@@ -244,6 +244,7 @@ if __name__ == '__main__':
     parser.add_argument("-r", "--rows", type=int, default=11, help="number of LSH rows" + default_str)
     parser.add_argument("-s", "--seed", type=int, default=1, help="seed for the random number generator" + default_str)
     parser.add_argument("-p", "--partitions", type=int, default=8, help="number of partitions (mainly for filtering operations)" + default_str)
+    parser.add_argument("--similarity-threshold", type=float, default=0.85, help="similarity threshold for the candidate pairs" + default_str)
     parser.add_argument("--similar-to", type=str, default=None, help="if set, return the most similar tweets to the provided tweet" + default_str)
     parser.add_argument("--fpfn-analysis", action="store_true", help="perform analysis on FP (false positives) and FN (false negatives) on samples of the dataset")
     parser.add_argument("--fpfn-analysis-samples", type=int, default=1, help="number of samples for the FP/FN analysis" + default_str)
@@ -260,6 +261,7 @@ if __name__ == '__main__':
         rows=args.rows,
         seed=args.seed,
         partitions=args.partitions,
+        similarity_threshold=args.similarity_threshold,
         similar_to=args.similar_to,
         fpfn_analysis=args.fpfn_analysis,
         fpfn_analysis_samples=args.fpfn_analysis_samples,
