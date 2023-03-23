@@ -162,17 +162,22 @@ def main(
     similarity_threshold = (1 - bands)**(1 - rows)
 
     spark = initialize_spark()
+    spark.sparkContext.setLogLevel('ERROR')
     
     df = prepare_data(spark, dataset, partitions)
 
-    df_shingles = generate_shingles(df, shingle_size)
+    df_shingles = generate_shingles(df, shingle_size, partitions)
 
     df_minhash = calculate_min_hash(spark, df_shingles, rows, bands)
+    print('Saving the minhashes... ', end='')
     df_minhash = save_and_load_df(spark, df_minhash, f'{minhash_base}_{rows}_{bands}')
+    print('and loaded')
 
     df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
     df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_minhash, similarity_threshold, bands, rows)
+    print('Saving the candidate pairs... ', end='')
     df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_{rows}_{bands}')
+    print('and loaded')
 
     if similar_to is not None:
         similar_articles = get_similar_articles(df_candidate_pairs_fpless, similar_to)
