@@ -2,10 +2,10 @@ import os.path
 import random
 import math
 import pyspark.sql.functions as F
-from pyspark.sql import SparkSession, Row, DataFrame
-from pyspark.sql.types import StringType, ArrayType, IntegerType, StructType, StructField
-from itertools import combinations, chain
-from functools import partial
+from pyspark import Broadcast
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.types import StringType, ArrayType, IntegerType
+from itertools import combinations
 from typing import Iterable, Any, List, Callable
 
 from argparse import ArgumentParser
@@ -37,7 +37,7 @@ def generate_shingles(df: DataFrame, shingle_size: int, partitions: int):
         shingles = (text[idx:idx+shingle_size] for idx in range(len(text) - shingle_size + 1))
         # Get last 32 bits in order to have 4-byte integers (Python allows arbitrarily large integers)
         to_integer = lambda s: hash(s) & ((1 << 32) - 1)
-        return list(set(to_integer(shingle_str) for shingle_str in shingles))
+        return list(set(map(to_integer, shingles)))
 
     return df \
         .drop('url') \
@@ -46,26 +46,22 @@ def generate_shingles(df: DataFrame, shingle_size: int, partitions: int):
         .withColumn('shingles', generate_shingles('text')) \
         .drop('text')
 
+# Assumes the values to hash are 4-byte integers
+def generate_universal_hash_family(K: int) -> List[Callable[[int], int]]:
+    N = 1 << 32
+    p = 2305843009213693951
 
-def calculate_min_hash(spark: SparkSession, df_shingles: DataFrame, b: int, r: int):
+    parameters = set()
+    while (len(parameters) < K):
+        parameters |= {(random.randint(1, N), random.randint(0, N)) for _ in range(K - len(parameters))}
+    
+    return [(a, b, p, N) for a, b in parameters]
 
-    # Assumes the values to hash are 4-byte integers
-    def generate_universal_hash_family(K: int) -> List[Callable[[int], int]]:
-        N = 1 << 32
-        p = 2305843009213693951
 
-        parameters = set()
-        while (len(parameters) < K):
-            parameters |= {(random.randint(1, N), random.randint(0, N)) for _ in range(K - len(parameters))}
-        
-        return [(a, b, p, N) for a, b in parameters]
-
-    hash_family = generate_universal_hash_family(r * b)
-    broadcasted_hash_family = spark.sparkContext.broadcast(hash_family)
-
+def calculate_min_hash(spark: SparkSession, df_shingles: DataFrame, hash_family: Broadcast):
     @F.udf(returnType=ArrayType(IntegerType(), False))
     def calculate_min_hash(shingles: List[int]):
-        return [min(((a * shingle + b) % p) % N for shingle in shingles) for (a, b, p, N) in broadcasted_hash_family.value]
+        return [min(((a * shingle + b) % p) % N for shingle in shingles) for (a, b, p, N) in hash_family.value]
 
     return df_shingles.withColumn('min_hash', calculate_min_hash('shingles')).drop('shingles')
 
@@ -112,15 +108,16 @@ def generate_candidate_pairs(spark: SparkSession, df_minhash: DataFrame, b: int,
 def min_hash_similar(min_hash_0: List[int], min_hash_1: List[int]):
     return sum((elem0 == elem1) for elem0, elem1 in zip(min_hash_0, min_hash_1))
 
-def filter_false_positives(df_candidate_pairs: DataFrame, df_minhash: DataFrame, similarity_threshold: float, b: int, r: int) -> DataFrame:
+def filter_false_positives(df_candidate_pairs: DataFrame, df_shingles: DataFrame, similarity_threshold: float) -> DataFrame:
     return df_candidate_pairs \
-        .join(df_minhash, df_minhash['tweet_id'] == F.col('candidate_pair_first')) \
-        .withColumnRenamed('min_hash', 'min_hash_first') \
+        .join(df_shingles, df_shingles['tweet_id'] == F.col('candidate_pair_first')) \
+        .withColumnRenamed('shingles', 'shingles_first') \
         .drop('tweet_id') \
-        .join(df_minhash, df_minhash['tweet_id'] == F.col('candidate_pair_second')) \
-        .withColumnRenamed('min_hash', 'min_hash_second') \
+        .join(df_shingles, df_shingles['tweet_id'] == F.col('candidate_pair_second')) \
+        .withColumnRenamed('shingles', 'shingles_second') \
         .drop('tweet_id') \
-        .withColumn('similarity', min_hash_similar('min_hash_first', 'min_hash_second') / (b * r)) \
+        .withColumn('similarity', F.size(F.array_intersect('shingles_first', 'shingles_second')) / F.size(F.array_union('shingles_first', 'shingles_second'))) \
+        .drop('shingles_first', 'shingles_second') \
         .filter(F.col('similarity') >= similarity_threshold)
 
 
@@ -167,8 +164,12 @@ def main(
     df = prepare_data(spark, dataset, partitions)
 
     df_shingles = generate_shingles(df, shingle_size, partitions)
+    df_shingles.cache()
 
-    df_minhash = calculate_min_hash(spark, df_shingles, rows, bands)
+    hash_family = generate_universal_hash_family(bands * rows)
+    hash_family_broadcast = spark.sparkContext.broadcast(hash_family)
+
+    df_minhash = calculate_min_hash(spark, df_shingles, hash_family_broadcast)
     print('Saving the minhashes...', end=' ')
     df_minhash = save_and_load_df(spark, df_minhash, f'{minhash_base}_{rows}_{bands}')
     print('and loaded')
@@ -176,7 +177,7 @@ def main(
     df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
     df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_minhash, similarity_threshold, bands, rows)
     print('Saving the candidate pairs... ', end='')
-    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_{rows}_{bands}')
+    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_{rows}_{bands}_{int(similarity_threshold * 100)}')
     print('and loaded')
 
     if similar_to is not None:
@@ -193,7 +194,9 @@ def main(
         for sample_i in range(fpfn_analysis_samples):
             print(f'Calculating sample number {sample_i + 1}...', end=' ')
             
-            df_minhash_sample = df_minhash.sample(fraction=fpfn_analysis_fraction, seed=seed + sample_i, withReplacement=False)
+            df_shingles_sample = df_shingles.sample(fraction=fpfn_analysis_fraction, seed=seed + sample_i, withReplacement=False)
+            
+            df_minhash_sample = calculate_min_hash(spark, df_shingles_sample, hash_family_broadcast)
             
             df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash_sample, bands, rows, partitions)
 
@@ -206,14 +209,13 @@ def main(
 
             false_positive_percentage = (candidate_pairs_n - candidate_pairs_fpless_n) / candidate_pairs_n
 
-            false_negatives = df_minhash_sample \
-                .crossJoin(df_minhash_sample.select(F.col('tweet_id').alias('tweet_id_other'), F.col('min_hash').alias('min_hash_other'))) \
+            false_negatives = df_shingles_sample \
+                .crossJoin(df_shingles_sample.select(F.col('tweet_id').alias('tweet_id_other'), F.col('shingles').alias('shingles_other'))) \
                 .filter(F.col('tweet_id') < F.col('tweet_id_other')) \
-                .select(F.array('tweet_id', 'tweet_id_other').alias('pair'),'min_hash', 'min_hash_other') \
-                .join(df_candidate_pairs_sample, F.array(df_candidate_pairs_sample['candidate_pair_first'], df_candidate_pairs_sample['candidate_pair_second']) == F.col('pair'), 'left') \
+                .join(df_candidate_pairs_sample, (F.col('tweet_id') == F.col('candidate_pair_first')) & (F.col('tweet_id_other') == F.col('candidate_pair_second')), 'left') \
                 .filter(F.col('candidate_pair_first').isNull()) \
                 .drop('candidate_pair_first', 'candidate_pair_second') \
-                .withColumn('similarity', min_hash_similar('min_hash', 'min_hash_other') / (bands * rows)) \
+                .withColumn('similarity', F.size(F.array_intersect('shingles_first', 'shingles_second')) / F.size(F.array_union('shingles_first', 'shingles_second'))) \
                 .filter(F.col('similarity') >= similarity_threshold) \
                 .count()
 
