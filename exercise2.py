@@ -159,6 +159,7 @@ def main(
     random.seed(seed)
 
     spark = initialize_spark()
+    # Set the log level to be more restrictive, so that the prints can be properly shown
     spark.sparkContext.setLogLevel('ERROR')
     
     df = prepare_data(spark, dataset, partitions)
@@ -168,15 +169,19 @@ def main(
     hash_family = generate_universal_hash_family(bands * rows)
     hash_family_broadcast = spark.sparkContext.broadcast(hash_family)
 
-    df_minhash = calculate_min_hash(spark, df_shingles, hash_family_broadcast)
     print('Saving the minhashes...', end=' ')
+    df_minhash = calculate_min_hash(spark, df_shingles, hash_family_broadcast)
     df_minhash = save_and_load_df(spark, df_minhash, f'{minhash_base}_{rows}_{bands}')
     print('and loaded')
 
-    df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
-    df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_shingles, similarity_threshold)
     print('Saving the candidate pairs... ', end='')
-    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_{rows}_{bands}_{int(similarity_threshold * 100)}')
+    df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
+    df_candidate_pairs = save_and_load_df(spark, df_candidate_pairs, f'{candidate_pairs_base}_fpless_{rows}_{bands}_{int(similarity_threshold * 100)}')
+    print('and loaded')
+
+    print('Saving the candidate pairs without false positives... ', end='')
+    df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_shingles, similarity_threshold)
+    df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_fpless_{rows}_{bands}_{int(similarity_threshold * 100)}')
     print('and loaded')
 
     if similar_to is not None:
@@ -194,10 +199,12 @@ def main(
             print(f'Calculating sample number {sample_i + 1}...', end=' ')
             
             df_shingles_sample = df_shingles.sample(fraction=fpfn_analysis_fraction, seed=seed + sample_i, withReplacement=False)
+            df_shingles_sample.cache()
             
             df_minhash_sample = calculate_min_hash(spark, df_shingles_sample, hash_family_broadcast)
             
             df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash_sample, bands, rows, partitions)
+            df_candidate_pairs_sample = save_and_load_df(spark, df_candidate_pairs_sample, 'tmp')
 
             df_candidate_pairs_fpless_sample = filter_false_positives(df_candidate_pairs_sample, df_shingles_sample, similarity_threshold)
 
@@ -218,13 +225,20 @@ def main(
                 .filter(F.col('similarity') >= similarity_threshold) \
                 .count()
 
-            tweets_n = df_minhash_sample.count()
+            tweets_n = df_shingles_sample.count()
             false_negative_percentage = false_negatives / (math.comb(tweets_n, 2) - candidate_pairs_n)
 
             print('false positive and negative percentage calculated')
 
             false_positive_percentages.append(false_positive_percentage)
             false_negative_percentages.append(false_negative_percentage)
+
+            # Clean the temporary candidate pairs
+            for part in os.listdir('tmp'):
+                os.remove(os.path.join('tmp', part))
+            os.rmdir('tmp')
+
+            df_shingles_sample.unpersist()
         
         avg = lambda l: sum(l)/len(l)
         print(f'False positive percentage (average over {fpfn_analysis_samples} of fraction {fpfn_analysis_fraction}): {avg(false_positive_percentages):%}')

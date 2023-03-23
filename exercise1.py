@@ -127,7 +127,6 @@ def third_pass(
 
     fname = table_frequent_base + '_k3'
 
-    # TODO: is array_sort after the combination generation actually? watch out for the way spark partitions and stuff...?
     if not os.path.exists(fname):
         frequent_diseases_k3 = df \
             .filter(col('CODE').isin(frequent_diseases_k1_set.value)) \
