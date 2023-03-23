@@ -164,7 +164,6 @@ def main(
     df = prepare_data(spark, dataset, partitions)
 
     df_shingles = generate_shingles(df, shingle_size, partitions)
-    df_shingles.cache()
 
     hash_family = generate_universal_hash_family(bands * rows)
     hash_family_broadcast = spark.sparkContext.broadcast(hash_family)
@@ -175,7 +174,7 @@ def main(
     print('and loaded')
 
     df_candidate_pairs = generate_candidate_pairs(spark, df_minhash, bands, rows, partitions)
-    df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_minhash, similarity_threshold, bands, rows)
+    df_candidate_pairs_fpless = filter_false_positives(df_candidate_pairs, df_shingles, similarity_threshold)
     print('Saving the candidate pairs... ', end='')
     df_candidate_pairs_fpless = save_and_load_df(spark, df_candidate_pairs_fpless, f'{candidate_pairs_base}_{rows}_{bands}_{int(similarity_threshold * 100)}')
     print('and loaded')
@@ -200,7 +199,7 @@ def main(
             
             df_candidate_pairs_sample = generate_candidate_pairs(spark, df_minhash_sample, bands, rows, partitions)
 
-            df_candidate_pairs_fpless_sample = filter_false_positives(df_candidate_pairs_sample, df_minhash_sample, similarity_threshold, bands, rows)
+            df_candidate_pairs_fpless_sample = filter_false_positives(df_candidate_pairs_sample, df_shingles_sample, similarity_threshold)
 
             print('minhashes and candidate pairs calculated...', end=' ')
 
@@ -215,7 +214,7 @@ def main(
                 .join(df_candidate_pairs_sample, (F.col('tweet_id') == F.col('candidate_pair_first')) & (F.col('tweet_id_other') == F.col('candidate_pair_second')), 'left') \
                 .filter(F.col('candidate_pair_first').isNull()) \
                 .drop('candidate_pair_first', 'candidate_pair_second') \
-                .withColumn('similarity', F.size(F.array_intersect('shingles_first', 'shingles_second')) / F.size(F.array_union('shingles_first', 'shingles_second'))) \
+                .withColumn('similarity', F.size(F.array_intersect('shingles', 'shingles_other')) / F.size(F.array_union('shingles', 'shingles_other'))) \
                 .filter(F.col('similarity') >= similarity_threshold) \
                 .count()
 
